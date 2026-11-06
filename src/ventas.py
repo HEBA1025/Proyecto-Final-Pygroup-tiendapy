@@ -6,9 +6,9 @@ Cumple con CF-06, CF-07, CF-08, CF-09, CF-10, CR-02 y CR-05.
 
 from datetime import date
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 from tabulate import tabulate
-from persistencia import BASE_DIR, RUTA_VENTAS
+from persistencia import BASE_DIR, RUTA_VENTAS, RUTA_INVENTARIO, guardar_inventario
 
 
 def crear_carrito() -> Dict[str, Dict[str, Any]]:
@@ -42,9 +42,9 @@ def agregar_al_carrito(
     cantidad_previa = carrito.get(codigo_limpio, {}).get("cantidad", 0)
     cantidad_total = cantidad_previa + cantidad
 
-    # CF-09: Control estricto de stock
+    # CF-09: Rechazar si supera el stock disponible
     if cantidad_total > stock_disponible:
-        print(f"[RECHAZADO] Stock insuficiente para '{producto['nombre']}'. Disponible: {stock_disponible}, solicitado: {cantidad_total}.")
+        print(f"[RECHAZADO] Stock insuficiente para '{producto['nombre']}'. Disponible: {stock_disponible}, en carrito: {cantidad_total}.")
         return False
 
     subtotal_item = round(cantidad_total * producto["precio"], 2)
@@ -62,8 +62,8 @@ def agregar_al_carrito(
 
 def calcular_totales(carrito: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
     """
-    Calcula subtotal, porcentaje y valor de descuento y total a pagar (CF-07).
-    Reglas de negocio:
+    Calcula subtotal, porcentaje, descuento y total a pagar (CF-07).
+    Reglas de negocio 3.3:
       - Subtotal >= $50.000 COP -> 5% de descuento.
       - Subtotal >= $100.000 COP -> 10% de descuento.
     """
@@ -89,7 +89,7 @@ def calcular_totales(carrito: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
 
 def formatear_detalle_venta(carrito: Dict[str, Dict[str, Any]], totales: Dict[str, float]) -> str:
     """
-    Genera una representacion visual en tabla de la venta usando tabulate (CF-06).
+    Genera el desglose formateado del carrito usando tabulate (CF-06).
     """
     filas = []
     for item in carrito.values():
@@ -115,11 +115,11 @@ def formatear_detalle_venta(carrito: Dict[str, Dict[str, Any]], totales: Dict[st
 
 def procesar_pago(total: float, monto_recibido: float) -> Tuple[bool, float]:
     """
-    Valida que el pago sea suficiente y calcula el cambio (CF-08).
+    Valida que el pago cubra el total y calcula el cambio (CF-08).
     """
     if monto_recibido < total:
         faltante = round(total - monto_recibido, 2)
-        print(f"[PAGO INSUFICIENTE] Faltan ${faltante:,.1f} COP para completar el total.")
+        print(f"[PAGO INSUFICIENTE] Faltan ${faltante:,.1f} COP para cubrir el total.")
         return False, 0.0
 
     cambio = round(monto_recibido - total, 2)
@@ -130,70 +130,74 @@ def confirmar_venta(
         inventario: Dict[str, Dict[str, Any]],
         carrito: Dict[str, Dict[str, Any]],
         total: float,
-        ruta_ventas: Path | str = RUTA_VENTAS
+        ruta_ventas: Path | str = RUTA_VENTAS,
+        ruta_inventario: Path | str = RUTA_INVENTARIO
 ) -> bool:
     """
-    Descuenta el stock del inventario y registra la venta en data/ventas.txt (CF-10).
-    Formato: fecha|total|codigo:cantidad;codigo:cantidad
+    Confirma la venta:
+    1. Descuenta las unidades vendidas del stock en memoria.
+    2. Actualiza 'data/inventario.txt' con el nuevo stock (CF-10, CF-13, CR-05).
+    3. Registra la venta al final de 'data/ventas.txt' (CF-10, Seccion 3.4).
     """
     if not carrito:
         print("[ERROR] El carrito esta vacio.")
         return False
 
-    # 1. Descontar el stock en memoria
+    # 1. Descontar stock en memoria
     for cod, item in carrito.items():
         inventario[cod]["stock"] -= item["cantidad"]
 
-    # 2. Construir la linea de persistencia
-    # Ejemplo: LAC001:2;BEB003:1
+    # 2. Persistir inventario actualizado en data/inventario.txt
+    if not guardar_inventario(inventario, ruta_inventario):
+        print("[ERROR] No se pudo actualizar el stock en inventario.txt.")
+        return False
+
+    # 3. Formatear linea de venta: fecha|total|codigo:cantidad;codigo:cantidad
     detalle_codigos = ";".join(f"{item['codigo']}:{item['cantidad']}" for item in carrito.values())
     fecha_hoy = date.today().isoformat()
     linea_venta = f"{fecha_hoy}|{total:.1f}|{detalle_codigos}\n"
 
-    # 3. Guardar al final de ventas.txt (modo 'a' con with, CR-05)
-    ruta = Path(ruta_ventas)
-    ruta.parent.mkdir(parents=True, exist_ok=True)
+    # 4. Guardar al final de ventas.txt (modo append 'a' con context manager, CR-05)
+    ruta_v = Path(ruta_ventas)
+    ruta_v.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(ruta, mode="a", encoding="utf-8") as f:
+        with open(ruta_v, mode="a", encoding="utf-8") as f:
             f.write(linea_venta)
-        print("[EXITO] Venta registrada exitosamente en historial y stock actualizado.")
+        print("[EXITO] Venta registrada en 'data/ventas.txt' e inventario actualizado en disco.")
         return True
     except OSError as e:
-        print(f"[ERROR] No se pudo guardar la venta en '{ruta}': {e}")
+        print(f"[ERROR] Error al escribir en '{ruta_v}': {e}")
         return False
 
 
 if __name__ == "__main__":
     from persistencia import cargar_inventario
 
-    print("--- PROBANDO MODULO DE VENTAS (src/ventas.py) ---")
+    print("--- PRUEBA INTEGRAL DE PERSISTENCIA DE VENTAS (src/ventas.py) ---")
     inv = cargar_inventario()
     cart = crear_carrito()
 
-    # 1. Prueba de control de stock (CF-09)
-    print("\n1. Intentar vender mas del stock disponible:")
-    # BEB003 tiene stock de 8 unidades en nuestro data/inventario.txt
-    agregar_al_carrito(inv, cart, "BEB003", 50)
+    # 1. Agregar productos al carrito
+    print("\n1. Cargando productos al carrito:")
+    agregar_al_carrito(inv, cart, "LAC001", 2)
+    agregar_al_carrito(inv, cart, "BEB003", 1)
 
-    # 2. Agregar productos validos al carrito (CF-06)
-    print("\n2. Construir una venta valida (superando $50.000 para probar descuento):")
-    agregar_al_carrito(inv, cart, "LAC001", 10)  # 10 * 4200 = 42.000
-    agregar_al_carrito(inv, cart, "ASE002", 2)   # 2 * 7500 = 15.000 -> Subtotal = 57.000
-
-    # 3. Calcular totales y verificar descuento del 5% (CF-07)
+    # 2. Calcular totales y mostrar detalle
     totales = calcular_totales(cart)
     print(formatear_detalle_venta(cart, totales))
 
-    # 4. Prueba de pago insuficiente y cambio correcto (CF-08)
-    print("4. Validacion de pago:")
-    valido, _ = procesar_pago(totales["total"], 50000.0)
-    print(f"Pago de $50.000 valido? {valido}")
+    # 3. Probar rechazo de pago insuficiente (CF-08)
+    print("3. Validacion de pago insuficiente:")
+    pago_ok, _ = procesar_pago(totales["total"], 10000.0)
 
-    valido, cambio = procesar_pago(totales["total"], 60000.0)
-    print(f"Pago de $60.000 valido? {valido} | Cambio: ${cambio:,.1f} COP")
+    # 4. Probar pago valido y calculo de cambio (CF-08)
+    print("\n4. Pago valido con billete de $20.000:")
+    pago_ok, cambio = procesar_pago(totales["total"], 20000.0)
+    if pago_ok:
+        print(f"[PAGO RECIBIDO] Cambio a entregar: ${cambio:,.1f} COP")
 
-    # 5. Confirmar venta y registrar en data/ventas.txt (CF-10)
-    print("\n5. Confirmar venta y descontar stock:")
-    stock_antes_lac = inv["LAC001"]["stock"]
+    # 5. Confirmar venta y verificar persistencia en ambos archivos (CF-10)
+    print("\n5. Confirmando venta y persistiendo en disco:")
+    stock_previo_lac = inv["LAC001"]["stock"]
     confirmar_venta(inv, cart, totales["total"])
-    print(f"Stock de LAC001 antes: {stock_antes_lac} -> despues: {inv['LAC001']['stock']}")
+    print(f"Stock LAC001 en memoria: {stock_previo_lac} -> {inv['LAC001']['stock']}")
