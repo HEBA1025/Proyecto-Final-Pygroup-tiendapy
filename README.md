@@ -26,24 +26,10 @@ Proyecto final para el curso **Python 0 a 100** (ACM UD - Universidad Distrital 
    ```
 
 2. **Crear y activar el entorno virtual:**
-
-   * En Windows (PowerShell):
-     ```powershell
-     python -m venv .venv
-     .venv\Scripts\Activate.ps1
-     ```
-
-   * En Windows (CMD):
-     ```cmd
-     python -m venv .venv
-     .venv\Scripts\activate.bat
-     ```
-
-   * En Linux / macOS:
-     ```bash
-     python3 -m venv .venv
-     source .venv/bin/activate
-     ```
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
 
 3. **Instalar dependencias:**
    ```bash
